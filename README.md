@@ -136,6 +136,4 @@ The system is evaluated using two main metrics:
 4. Push to the branch
 5. Create a Pull Request
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+## Feel free to contact me for any thing regarding this repo Happy Coding...
