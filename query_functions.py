@@ -6,12 +6,22 @@ from bs4 import BeautifulSoup
 import requests
 from sentence_transformers import SentenceTransformer, util
 import torch
+import gc
 
-# Load the data
+# Load the data with optimized memory usage
 try:
-    # Try to load the transformed dataset
-    catalog_df = pd.read_csv("transformed_data1.csv")
-    catalog_df.columns = catalog_df.columns.str.strip()  # Strip whitespace from column names
+    # Try to load the transformed dataset with optimized dtypes
+    catalog_df = pd.read_csv("transformed_data1.csv", 
+                           dtype={
+                               'Assessment Name': 'category',
+                               'Test Type': 'category',
+                               'Remote Testing': 'category',
+                               'Adaptive/IRT': 'category',
+                               'Skills': 'category',
+                               'Description': 'string',
+                               'Relative URL': 'string'
+                           })
+    catalog_df.columns = catalog_df.columns.str.strip()
 except FileNotFoundError:
     raise FileNotFoundError("transformed_data1.csv not found!")
 
@@ -32,9 +42,20 @@ def combine_row(row):
 catalog_df['combined'] = catalog_df.apply(combine_row, axis=1)
 corpus = catalog_df['combined'].tolist()
 
-# Initialize the model
-model = SentenceTransformer('all-MiniLM-L6-v2')
-corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+# Initialize the model with memory optimization
+model = SentenceTransformer('paraphrase-MiniLM-L3-v2')  # Using a smaller model
+model.max_seq_length = 128  # Reduce sequence length
+
+# Generate embeddings in batches to save memory
+BATCH_SIZE = 32
+corpus_embeddings = []
+for i in range(0, len(corpus), BATCH_SIZE):
+    batch = corpus[i:i + BATCH_SIZE]
+    batch_embeddings = model.encode(batch, convert_to_tensor=True)
+    corpus_embeddings.append(batch_embeddings)
+    gc.collect()  # Force garbage collection
+
+corpus_embeddings = torch.cat(corpus_embeddings, dim=0)
 
 def extract_url_from_text(text):
     """Extract URL from text if present."""
@@ -127,13 +148,28 @@ def filter_recommendations(recommendations, query):
 def find_recommendations(query, k=5):
     """Find top-k recommendations for a query."""
     query_embedding = model.encode(query, convert_to_tensor=True)
-    cosine_scores = util.cos_sim(query_embedding, corpus_embeddings)[0]
-    top_k = min(k, len(corpus))
-    top_results = torch.topk(cosine_scores, k=top_k)
+    
+    # Process in batches to save memory
+    batch_size = 32
+    top_scores = []
+    top_indices = []
+    
+    for i in range(0, len(corpus_embeddings), batch_size):
+        batch_embeddings = corpus_embeddings[i:i + batch_size]
+        batch_scores = util.cos_sim(query_embedding, batch_embeddings)[0]
+        batch_top_k = min(k, len(batch_scores))
+        batch_top_scores, batch_top_indices = torch.topk(batch_scores, k=batch_top_k)
+        
+        top_scores.extend(batch_top_scores.tolist())
+        top_indices.extend([idx + i for idx in batch_top_indices.tolist()])
+        
+        # Keep only top k overall
+        if len(top_scores) > k:
+            top_scores = sorted(top_scores, reverse=True)[:k]
+            top_indices = [idx for _, idx in sorted(zip(top_scores, top_indices), reverse=True)][:k]
     
     results = []
-    for score, idx in zip(top_results[0], top_results[1]):
-        idx = idx.item()
+    for score, idx in zip(top_scores, top_indices):
         result = {
             "Assessment Name": catalog_df.iloc[idx]['Assessment Name'],
             "Skills": catalog_df.iloc[idx]['Skills'],
@@ -146,6 +182,7 @@ def find_recommendations(query, k=5):
             "Score": round(float(score), 4)
         }
         results.append(result)
+    
     return results
 
 def query_handling(query):
