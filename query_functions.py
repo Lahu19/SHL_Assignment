@@ -7,9 +7,42 @@ import requests
 from sentence_transformers import SentenceTransformer, util
 import torch
 import gc
+import warnings
+import os
+from huggingface_hub import snapshot_download
+import psutil
+
+# Suppress warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+def get_memory_usage():
+    """Get current memory usage in MB"""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
+
+# Define model paths
+MODEL_NAME = 'paraphrase-MiniLM-L3-v2'
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+MODEL_PATH = os.path.join(MODELS_DIR, MODEL_NAME)
+
+# Create models directory if it doesn't exist
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Download and cache model if not already present
+if not os.path.exists(MODEL_PATH):
+    print(f"Downloading model {MODEL_NAME} to {MODEL_PATH}...")
+    snapshot_download(
+        repo_id=f"sentence-transformers/{MODEL_NAME}",
+        local_dir=MODEL_PATH,
+        local_dir_use_symlinks=False,
+        ignore_patterns=["*.md", "*.txt"],
+        resume_download=True
+    )
+    print("Model download complete!")
 
 # Load the data with optimized memory usage
 try:
+    print(f"Memory usage before loading data: {get_memory_usage():.2f} MB")
     # Try to load the transformed dataset with optimized dtypes
     catalog_df = pd.read_csv("transformed_data1.csv", 
                            dtype={
@@ -22,6 +55,7 @@ try:
                                'Relative URL': 'string'
                            })
     catalog_df.columns = catalog_df.columns.str.strip()
+    print(f"Memory usage after loading data: {get_memory_usage():.2f} MB")
 except FileNotFoundError:
     raise FileNotFoundError("transformed_data1.csv not found!")
 
@@ -42,20 +76,25 @@ def combine_row(row):
 catalog_df['combined'] = catalog_df.apply(combine_row, axis=1)
 corpus = catalog_df['combined'].tolist()
 
-# Initialize the model with memory optimization
-model = SentenceTransformer('paraphrase-MiniLM-L3-v2')  # Using a smaller model
+# Initialize the model from local path
+print(f"Loading model from {MODEL_PATH}...")
+model = SentenceTransformer(MODEL_PATH)
 model.max_seq_length = 128  # Reduce sequence length
+print("Model loaded successfully!")
+print(f"Memory usage after loading model: {get_memory_usage():.2f} MB")
 
 # Generate embeddings in batches to save memory
-BATCH_SIZE = 32
+BATCH_SIZE = 16  # Reduced batch size for lower memory usage
 corpus_embeddings = []
 for i in range(0, len(corpus), BATCH_SIZE):
     batch = corpus[i:i + BATCH_SIZE]
     batch_embeddings = model.encode(batch, convert_to_tensor=True)
     corpus_embeddings.append(batch_embeddings)
     gc.collect()  # Force garbage collection
+    print(f"Processed batch {i//BATCH_SIZE + 1}, Memory usage: {get_memory_usage():.2f} MB")
 
 corpus_embeddings = torch.cat(corpus_embeddings, dim=0)
+print(f"Final memory usage: {get_memory_usage():.2f} MB")
 
 def extract_url_from_text(text):
     """Extract URL from text if present."""
