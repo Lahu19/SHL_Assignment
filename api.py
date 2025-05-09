@@ -5,7 +5,6 @@ import pandas as pd
 from query_functions import query_handling
 import uvicorn
 import os
-import gc
 
 
 app = FastAPI(
@@ -56,20 +55,14 @@ async def recommend_assessments(request: RecommendationRequest):
             )
             recommendations.append(recommendation)
         
-        # Clear memory
-        del df
-        gc.collect()
-        
         if not recommendations:
             raise HTTPException(status_code=404, detail="No assessments found matching the criteria")
         
         return RecommendationResponse(recommended_assessments=recommendations)
     
     except Exception as e:
-        # Clear memory in case of error
-        gc.collect()
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)  # Use single worker to save memory 
+    uvicorn.run(app, host="0.0.0.0", port=port) 
